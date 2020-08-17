@@ -8,6 +8,7 @@
 #include "project.hh"
 #include "query.hh"
 #include "sema_manager.hh"
+#include "platform.hh"
 
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/StringRef.h>
@@ -17,6 +18,7 @@
 #include <ctype.h>
 #include <functional>
 #include <limits.h>
+#include <charconv>
 using namespace llvm;
 
 namespace ccls {
@@ -150,62 +152,105 @@ void MessageHandler::workspace_symbol(WorkspaceSymbolParam &param,
   for (auto &folder : param.folders)
     ensureEndsInSlash(folder);
   std::vector<uint8_t> file_set = db->getFileSet(param.folders);
+  if (false) {
+    // {symbol info, matching detailed_name or short_name, index}
+    std::vector<std::tuple<SymbolInformation, int, SymbolIdx>> cands;
+    bool sensitive = g_config->workspaceSymbol.caseSensitivity;
 
-  // {symbol info, matching detailed_name or short_name, index}
-  std::vector<std::tuple<SymbolInformation, int, SymbolIdx>> cands;
-  bool sensitive = g_config->workspaceSymbol.caseSensitivity;
+    // Find subsequence matches.
+    std::string query_without_space;
+    query_without_space.reserve(query.size());
+    for (char c : query)
+      if (!isspace(c))
+        query_without_space += c;
 
-  // Find subsequence matches.
-  std::string query_without_space;
-  query_without_space.reserve(query.size());
-  for (char c : query)
-    if (!isspace(c))
-      query_without_space += c;
-
-  auto add = [&](SymbolIdx sym) {
-    std::string_view detailed_name = db->getSymbolName(sym, true);
-    int pos = reverseSubseqMatch(query_without_space, detailed_name, sensitive);
-    return pos >= 0 &&
-           addSymbol(db, wfiles, file_set, sym,
-                     detailed_name.find(':', pos) != std::string::npos,
-                     &cands) &&
-           cands.size() >= g_config->workspaceSymbol.maxNum;
-  };
-  for (auto &func : db->funcs)
-    if (add({func.usr, Kind::Func}))
-      goto done_add;
-  for (auto &type : db->types)
-    if (add({type.usr, Kind::Type}))
-      goto done_add;
-  for (auto &var : db->vars)
-    if (var.def.size() && !var.def[0].is_local() && add({var.usr, Kind::Var}))
-      goto done_add;
+    auto add = [&](SymbolIdx sym) {
+      std::string_view detailed_name = db->getSymbolName(sym, true);
+      int pos = reverseSubseqMatch(query_without_space, detailed_name, sensitive);
+      return pos >= 0 &&
+             addSymbol(db, wfiles, file_set, sym,
+                       detailed_name.find(':', pos) != std::string::npos,
+                       &cands) &&
+             cands.size() >= g_config->workspaceSymbol.maxNum;
+    };
+    for (auto &func : db->funcs)
+      if (add({func.usr, Kind::Func}))
+        goto done_add;
+    for (auto &type : db->types)
+      if (add({type.usr, Kind::Type}))
+        goto done_add;
+    for (auto &var : db->vars)
+      if (var.def.size() && !var.def[0].is_local() && add({var.usr, Kind::Var}))
+        goto done_add;
 done_add:
 
-  if (g_config->workspaceSymbol.sort && query.size() <= FuzzyMatcher::kMaxPat) {
-    // Sort results with a fuzzy matching algorithm.
-    int longest = 0;
-    for (auto &cand : cands)
-      longest = std::max(
-          longest, int(db->getSymbolName(std::get<2>(cand), true).size()));
-    FuzzyMatcher fuzzy(query, g_config->workspaceSymbol.caseSensitivity);
-    for (auto &cand : cands)
-      std::get<1>(cand) = fuzzy.match(
-          db->getSymbolName(std::get<2>(cand), std::get<1>(cand)), false);
-    std::sort(cands.begin(), cands.end(), [](const auto &l, const auto &r) {
-      return std::get<1>(l) > std::get<1>(r);
-    });
-    result.reserve(cands.size());
-    for (auto &cand : cands) {
-      // Discard awful candidates.
-      if (std::get<1>(cand) <= FuzzyMatcher::kMinScore)
-        break;
-      result.push_back(std::get<0>(cand));
+    if (g_config->workspaceSymbol.sort && query.size() <= FuzzyMatcher::kMaxPat) {
+      // Sort results with a fuzzy matching algorithm.
+      int longest = 0;
+      for (auto &cand : cands)
+        longest = std::max(
+            longest, int(db->getSymbolName(std::get<2>(cand), true).size()));
+      FuzzyMatcher fuzzy(query, g_config->workspaceSymbol.caseSensitivity);
+      for (auto &cand : cands)
+        std::get<1>(cand) = fuzzy.match(
+            db->getSymbolName(std::get<2>(cand), std::get<1>(cand)), false);
+      std::sort(cands.begin(), cands.end(), [](const auto &l, const auto &r) {
+        return std::get<1>(l) > std::get<1>(r);
+      });
+      result.reserve(cands.size());
+      for (auto &cand : cands) {
+        // Discard awful candidates.
+        if (std::get<1>(cand) <= FuzzyMatcher::kMinScore)
+          break;
+        result.push_back(std::get<0>(cand));
+      }
+    } else {
+      result.reserve(cands.size());
+      for (auto &cand : cands)
+        result.push_back(std::get<0>(cand));
     }
   } else {
+    Process proc("/home/fredizzimo/go/src/github.com/junegunn/fzf/bin/fzf", "--read0", "--print0", "--filter", query.c_str());
+    auto add = [&](SymbolIdx sym) {
+      auto detailed_name = db->getSymbolName(sym, true);
+      proc.write(detailed_name);
+    };
+    // for (auto &func : db->funcs)
+    //   add({func.usr, Kind::Func});
+    for (auto &type : db->types)
+      add({type.usr, Kind::Type});
+    // for (auto &var : db->vars)
+    //   if (var.def.size() && !var.def[0].is_local()) 
+    //     add({var.usr, Kind::Var});
+    proc.closeWrite();
+    std::vector<std::tuple<SymbolInformation, int, SymbolIdx>> cands;
+    while (true) {
+      auto indexStr = proc.read();
+      LOG_S(INFO) << indexStr << "\n";
+      if (indexStr.empty())
+        break;
+      auto score = proc.read();
+      auto offsets = proc.read();
+      auto positions = proc.read();
+      auto name = proc.read();
+      size_t index = 0;
+      auto res = std::from_chars(indexStr.begin(), indexStr.end(), index);
+      if (res.ec != std::errc::invalid_argument) {
+        if (index < db->types.size()) {
+          auto& func = db->types[index];
+          SymbolIdx sym = {func.usr, Kind::Type};
+          // Should use the max offset
+          bool useDetailed = true;
+          addSymbol(db, wfiles, file_set, sym,
+                    useDetailed,
+                    &cands);
+        }
+      }
+    }
     result.reserve(cands.size());
-    for (auto &cand : cands)
-      result.push_back(std::get<0>(cand));
+    std::transform(cands.begin(), cands.end(), std::back_inserter(result), [&](const auto& v) {
+        return std::get<0>(v);
+    });
   }
 
   reply(result);
