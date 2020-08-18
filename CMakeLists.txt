@@ -197,6 +197,7 @@ target_sources(ccls PRIVATE
   src/config.cc
   src/filesystem.cc
   src/fuzzy_match.cc
+  src/fzf_matcher.cc
   src/main.cc
   src/include_complete.cc
   src/indexer.cc

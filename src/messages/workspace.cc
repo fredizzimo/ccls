@@ -9,6 +9,7 @@
 #include "query.hh"
 #include "sema_manager.hh"
 #include "platform.hh"
+#include "fzf_matcher.hh"
 
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/StringRef.h>
@@ -210,10 +211,17 @@ done_add:
         result.push_back(std::get<0>(cand));
     }
   } else {
-    Process proc("/home/fredizzimo/go/src/github.com/junegunn/fzf/bin/fzf", "--read0", "--print0", "--filter", query.c_str());
+    std::vector<std::tuple<SymbolInformation, int, SymbolIdx>> cands;
+    FzfMatcher matcher(query);
     auto add = [&](SymbolIdx sym) {
       auto detailed_name = db->getSymbolName(sym, true);
-      proc.write(detailed_name);
+      if (matcher.match(detailed_name)) {
+          // Should use the max offset
+          bool useDetailed = true;
+          addSymbol(db, wfiles, file_set, sym,
+                    useDetailed,
+                    &cands);
+      }
     };
     // for (auto &func : db->funcs)
     //   add({func.usr, Kind::Func});
@@ -222,31 +230,7 @@ done_add:
     // for (auto &var : db->vars)
     //   if (var.def.size() && !var.def[0].is_local()) 
     //     add({var.usr, Kind::Var});
-    proc.closeWrite();
-    std::vector<std::tuple<SymbolInformation, int, SymbolIdx>> cands;
-    while (true) {
-      auto indexStr = proc.read();
-      LOG_S(INFO) << indexStr << "\n";
-      if (indexStr.empty())
-        break;
-      auto score = proc.read();
-      auto offsets = proc.read();
-      auto positions = proc.read();
-      auto name = proc.read();
-      size_t index = 0;
-      auto res = std::from_chars(indexStr.begin(), indexStr.end(), index);
-      if (res.ec != std::errc::invalid_argument) {
-        if (index < db->types.size()) {
-          auto& func = db->types[index];
-          SymbolIdx sym = {func.usr, Kind::Type};
-          // Should use the max offset
-          bool useDetailed = true;
-          addSymbol(db, wfiles, file_set, sym,
-                    useDetailed,
-                    &cands);
-        }
-      }
-    }
+    // }
     result.reserve(cands.size());
     std::transform(cands.begin(), cands.end(), std::back_inserter(result), [&](const auto& v) {
         return std::get<0>(v);
