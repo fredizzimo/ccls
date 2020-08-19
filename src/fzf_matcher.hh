@@ -9,7 +9,7 @@ class FzfMatcher {
   public:
     FzfMatcher(std::string_view pattern);
     ~FzfMatcher();
-    bool match(std::string_view line);
+    fzf_result* match(const char** lines, uint32_t* lineLengths, size_t numLines);
   private:
     fzf_pattern* pattern = nullptr;
 };

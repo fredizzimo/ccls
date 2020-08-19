@@ -40,7 +40,7 @@ namespace {
 
 FzfMatcher::FzfMatcher(std::string_view pattern) {
   if (loadLibrary()) {
-    this->pattern = FzfMakePattern((char*)pattern.data(), (int)pattern.size(), FZF_ALGORITHM_FUZZY_V2,
+    this->pattern = FzfMakePattern(pattern.data(), pattern.size(), FZF_ALGORITHM_FUZZY_V2,
       true, FZF_CASE_SMART, false, FZF_SORT_NONE, FZF_SORT_NONE, FZF_SORT_NONE); 
     if (this->pattern->error != nullptr) {
       LOG_S(ERROR) << this->pattern->error;
@@ -56,9 +56,9 @@ FzfMatcher::~FzfMatcher() {
   }
 }
 
-bool FzfMatcher::match(std::string_view line) {
+fzf_result* FzfMatcher::match(const char** lines, uint32_t* lineLengths, size_t numLines) {
   if (!pattern) {
-    return false;
+    return nullptr;
   }
-  return FzfMatch(pattern, (char*)line.data(), (int)line.size());
+  return FzfMatch(pattern, lines, lineLengths, numLines);
 }

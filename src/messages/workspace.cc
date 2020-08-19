@@ -212,16 +212,16 @@ done_add:
     }
   } else {
     std::vector<std::tuple<SymbolInformation, int, SymbolIdx>> cands;
+    std::vector<const char*> strings;
+    std::vector<uint32_t> stringLengths;
+    strings.reserve(db->types.size());
+    stringLengths.reserve(db->types.size());
+
     FzfMatcher matcher(query);
     auto add = [&](SymbolIdx sym) {
       auto detailed_name = db->getSymbolName(sym, true);
-      if (matcher.match(detailed_name)) {
-          // Should use the max offset
-          bool useDetailed = true;
-          addSymbol(db, wfiles, file_set, sym,
-                    useDetailed,
-                    &cands);
-      }
+      strings.push_back(detailed_name.data());
+      stringLengths.push_back(detailed_name.size());
     };
     // for (auto &func : db->funcs)
     //   add({func.usr, Kind::Func});
@@ -231,7 +231,18 @@ done_add:
     //   if (var.def.size() && !var.def[0].is_local()) 
     //     add({var.usr, Kind::Var});
     // }
-    result.reserve(cands.size());
+    auto matchResult = matcher.match(strings.data(), stringLengths.data(), strings.size());
+    if (matchResult) {
+      for (int i=0; i<matchResult->num_results; i++) {
+          auto symbolIndex = matchResult->indices[i];
+          bool useDetailed = true;
+          SymbolIdx sym = {db->types[symbolIndex].usr, Kind::Type};
+          addSymbol(db, wfiles, file_set, sym,
+                    useDetailed,
+                    &cands);
+      }
+      result.reserve(cands.size());
+    }
     std::transform(cands.begin(), cands.end(), std::back_inserter(result), [&](const auto& v) {
         return std::get<0>(v);
     });
