@@ -218,31 +218,44 @@ done_add:
     stringLengths.reserve(db->types.size());
 
     FzfMatcher matcher(query);
+
     auto add = [&](SymbolIdx sym) {
       auto detailed_name = db->getSymbolName(sym, true);
       strings.push_back(detailed_name.data());
       stringLengths.push_back(detailed_name.size());
     };
-    // for (auto &func : db->funcs)
-    //   add({func.usr, Kind::Func});
+    auto match = [&](auto& dbArray, auto kind) {
+      auto matchResult = matcher.match(strings.data(), stringLengths.data(), strings.size());
+      if (matchResult) {
+        for (int i=0; i<matchResult->num_results; i++) {
+            auto symbolIndex = matchResult->indices[i];
+            bool useDetailed = true;
+            SymbolIdx sym = {dbArray[symbolIndex].usr, kind};
+            addSymbol(db, wfiles, file_set, sym,
+                      useDetailed,
+                      &cands);
+        }
+      }
+    };
+    for (auto &func : db->funcs)
+      add({func.usr, Kind::Func});
+    match(db->funcs, Kind::Func);
+
+    strings.clear();
+    stringLengths.clear();
     for (auto &type : db->types)
       add({type.usr, Kind::Type});
-    // for (auto &var : db->vars)
-    //   if (var.def.size() && !var.def[0].is_local()) 
-    //     add({var.usr, Kind::Var});
-    // }
-    auto matchResult = matcher.match(strings.data(), stringLengths.data(), strings.size());
-    if (matchResult) {
-      for (int i=0; i<matchResult->num_results; i++) {
-          auto symbolIndex = matchResult->indices[i];
-          bool useDetailed = true;
-          SymbolIdx sym = {db->types[symbolIndex].usr, Kind::Type};
-          addSymbol(db, wfiles, file_set, sym,
-                    useDetailed,
-                    &cands);
-      }
-      result.reserve(cands.size());
+    match(db->types, Kind::Type);
+
+    strings.clear();
+    stringLengths.clear();
+    for (auto &var : db->vars) {
+      if (var.def.size() && !var.def[0].is_local()) 
+        add({var.usr, Kind::Var});
     }
+    match(db->vars, Kind::Var);
+
+    result.reserve(cands.size());
     std::transform(cands.begin(), cands.end(), std::back_inserter(result), [&](const auto& v) {
         return std::get<0>(v);
     });
