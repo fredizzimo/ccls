@@ -108,10 +108,11 @@ void MessageHandler::workspace_didChangeWorkspaceFolders(
 
 namespace {
 // Lookup |symbol| in |db| and insert the value into |result|.
+template<typename CandVector>
 bool addSymbol(
     DB *db, WorkingFiles *wfiles, const std::vector<uint8_t> &file_set,
     SymbolIdx sym, bool use_detailed,
-    std::vector<std::tuple<SymbolInformation, int, SymbolIdx>> *result) {
+    CandVector *result) {
   std::optional<SymbolInformation> info = getSymbolInfo(db, sym, true);
   if (!info)
     return false;
@@ -211,7 +212,7 @@ done_add:
         result.push_back(std::get<0>(cand));
     }
   } else {
-    std::vector<std::tuple<SymbolInformation, int, SymbolIdx>> cands;
+    std::vector<std::tuple<SymbolInformation, uint64_t, SymbolIdx>> cands;
     std::vector<const char*> strings;
     std::vector<uint32_t> stringLengths;
     strings.reserve(db->types.size());
@@ -231,9 +232,12 @@ done_add:
             auto symbolIndex = matchResult->indices[i];
             bool useDetailed = true;
             SymbolIdx sym = {dbArray[symbolIndex].usr, kind};
-            addSymbol(db, wfiles, file_set, sym,
-                      useDetailed,
-                      &cands);
+            bool added = addSymbol(db, wfiles, file_set, sym,
+                                   useDetailed,
+                                   &cands);
+            if (added) {
+              std::get<1>(cands.back()) = matchResult->scores[i];
+            }
         }
       }
     };
@@ -255,6 +259,12 @@ done_add:
     }
     match(db->vars, Kind::Var);
 
+    size_t resultSize = std::min<size_t>(cands.size(), g_config->workspaceSymbol.maxNum);
+    std::partial_sort(cands.begin(), cands.begin() + resultSize, cands.end(),
+        [] (const auto& a, const auto& b) {
+          return std::get<1>(a) < std::get<1>(b);
+        });
+    cands.resize(resultSize);
     result.reserve(cands.size());
     std::transform(cands.begin(), cands.end(), std::back_inserter(result), [&](const auto& v) {
         return std::get<0>(v);
