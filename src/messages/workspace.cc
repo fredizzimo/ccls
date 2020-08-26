@@ -214,6 +214,7 @@ done_add:
     std::vector<std::tuple<SymbolInformation, uint64_t, SymbolIdx>> cands;
     std::vector<const char*> strings;
     std::vector<uint32_t> stringLengths;
+    std::vector<SymbolIdx> matchSymbols;
     strings.reserve(db->types.size());
     stringLengths.reserve(db->types.size());
 
@@ -223,6 +224,7 @@ done_add:
       auto detailed_name = db->getSymbolName(sym, true);
       strings.push_back(detailed_name.data());
       stringLengths.push_back(detailed_name.size());
+      matchSymbols.push_back(sym);
     };
     auto match = [&](auto& dbArray, auto kind) {
       auto matchResult = matcher.match(strings.data(), stringLengths.data(), strings.size());
@@ -230,7 +232,7 @@ done_add:
         for (int i=0; i<matchResult->num_results; i++) {
             auto symbolIndex = matchResult->indices[i];
             bool useDetailed = true;
-            SymbolIdx sym = {dbArray[symbolIndex].usr, kind};
+            SymbolIdx sym = matchSymbols[symbolIndex];
             bool added = addSymbol(db, wfiles, file_set, sym,
                                    useDetailed,
                                    &cands);
@@ -246,12 +248,14 @@ done_add:
 
     strings.clear();
     stringLengths.clear();
+    matchSymbols.clear();
     for (auto &type : db->types)
       add({type.usr, Kind::Type});
     match(db->types, Kind::Type);
 
     strings.clear();
     stringLengths.clear();
+    matchSymbols.clear();
     for (auto &var : db->vars) {
       if (var.def.size() && !var.def[0].is_local()) 
         add({var.usr, Kind::Var});
