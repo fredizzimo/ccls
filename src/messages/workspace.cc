@@ -19,7 +19,6 @@
 #include <ctype.h>
 #include <functional>
 #include <limits.h>
-#include <chrono>
 using namespace llvm;
 
 namespace ccls {
@@ -158,30 +157,8 @@ bool addSymbol(
 }
 } // namespace
 
-class Profiler
-{
-public:
-  Profiler() {
-    now = clock.now();
-  }
-  void meassure(std::string message) {
-    auto newTime = clock.now();
-    auto diff = newTime - now;
-    auto sys_time = sysClock.now();
-    LOG_S(INFO) << "Profile: " << message << ": "
-      << std::chrono::duration_cast<std::chrono::milliseconds>(diff).count()
-      << " " << std::chrono::duration_cast<std::chrono::milliseconds>(sys_time.time_since_epoch()).count();
-    now = newTime;
-  }
-private:
-  std::chrono::high_resolution_clock clock;
-  std::chrono::system_clock sysClock;
-  typename std::chrono::high_resolution_clock::time_point now;
-};
-
 void MessageHandler::workspace_symbol(WorkspaceSymbolParam &param,
                                       ReplyOnce &reply) {
-  Profiler profiler;
   std::vector<SymbolInformation> result;
   const std::string &query = param.query;
   for (auto &folder : param.folders)
@@ -269,31 +246,24 @@ done_add:
       stringLengths.push_back(detailed_name.size());
       matchSymbols.emplace_back(sym, InvalidScore);
     };
-    profiler.meassure("Before processing");
     for (auto &func : db->funcs)
       add({func.usr, Kind::Func});
-    profiler.meassure("Add funcs");
     for (auto &type : db->types)
       add({type.usr, Kind::Type});
-    profiler.meassure("Add types");
     for (auto &var : db->vars) {
       if (var.def.size() && !var.def[0].is_local()) 
         add({var.usr, Kind::Var});
     }
-    profiler.meassure("Add vars");
     auto matchResult = matcher.match(strings.data(), stringLengths.data(), strings.size());
-    profiler.meassure("fzf");
     if (matchResult) {
       for (int i=0; i<matchResult->num_results; i++) {
         auto symbolIndex = matchResult->indices[i];
         std::get<1>(matchSymbols[symbolIndex]) = matchResult->scores[i];
       }
     }
-    profiler.meassure("fixup scores");
     std::sort(matchSymbols.begin(), matchSymbols.end(), [](const auto& a, const auto& b) {
         return std::get<1>(a) < std::get<1>(b);
     });
-    profiler.meassure("sort");
     result.reserve(g_config->workspaceSymbol.maxNum);
     const bool useDetailed = true;
     for(const auto& v: matchSymbols) {
@@ -311,8 +281,6 @@ done_add:
       }
     }
   }
-  profiler.meassure("Before reply");
   reply(result);
-  profiler.meassure("After reply");
 }
 } // namespace ccls
