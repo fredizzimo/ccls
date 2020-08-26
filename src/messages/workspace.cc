@@ -19,6 +19,7 @@
 #include <ctype.h>
 #include <functional>
 #include <limits.h>
+#include <chrono>
 using namespace llvm;
 
 namespace ccls {
@@ -107,14 +108,12 @@ void MessageHandler::workspace_didChangeWorkspaceFolders(
 
 namespace {
 // Lookup |symbol| in |db| and insert the value into |result|.
-template<typename CandVector>
-bool addSymbol(
+std::optional<SymbolInformation> addSymbol(
     DB *db, WorkingFiles *wfiles, const std::vector<uint8_t> &file_set,
-    SymbolIdx sym, bool use_detailed,
-    CandVector *result) {
+    SymbolIdx sym, bool use_detailed) {
   std::optional<SymbolInformation> info = getSymbolInfo(db, sym, true);
   if (!info)
-    return false;
+    return std::nullopt;
 
   Maybe<DeclRef> dr;
   bool in_folder = false;
@@ -135,19 +134,54 @@ bool addSymbol(
     }
   }
   if (!in_folder)
-    return false;
+    return std::nullopt;
 
   std::optional<Location> ls_location = getLsLocation(db, wfiles, *dr);
   if (!ls_location)
-    return false;
+    return std::nullopt;
   info->location = *ls_location;
-  result->emplace_back(*info, int(use_detailed), sym);
-  return true;
+  return info;
+}
+
+bool addSymbol(
+    DB *db, WorkingFiles *wfiles, const std::vector<uint8_t> &file_set,
+    SymbolIdx sym, bool use_detailed,
+    std::vector<std::tuple<SymbolInformation, int, SymbolIdx>>* result) {
+  auto info = addSymbol(db, wfiles, file_set, sym, use_detailed);
+  if (info) {
+    result->emplace_back(*info, int(use_detailed), sym);
+    return true;
+  } else {
+    return false;
+  }
+
 }
 } // namespace
 
+class Profiler
+{
+public:
+  Profiler() {
+    now = clock.now();
+  }
+  void meassure(std::string message) {
+    auto newTime = clock.now();
+    auto diff = newTime - now;
+    auto sys_time = sysClock.now();
+    LOG_S(INFO) << "Profile: " << message << ": "
+      << std::chrono::duration_cast<std::chrono::milliseconds>(diff).count()
+      << " " << std::chrono::duration_cast<std::chrono::milliseconds>(sys_time.time_since_epoch()).count();
+    now = newTime;
+  }
+private:
+  std::chrono::high_resolution_clock clock;
+  std::chrono::system_clock sysClock;
+  typename std::chrono::high_resolution_clock::time_point now;
+};
+
 void MessageHandler::workspace_symbol(WorkspaceSymbolParam &param,
                                       ReplyOnce &reply) {
+  Profiler profiler;
   std::vector<SymbolInformation> result;
   const std::string &query = param.query;
   for (auto &folder : param.folders)
@@ -211,12 +245,21 @@ done_add:
         result.push_back(std::get<0>(cand));
     }
   } else {
-    std::vector<std::tuple<SymbolInformation, uint64_t, SymbolIdx>> cands;
     std::vector<const char*> strings;
     std::vector<uint32_t> stringLengths;
-    std::vector<SymbolIdx> matchSymbols;
-    strings.reserve(db->types.size());
-    stringLengths.reserve(db->types.size());
+    using ScoreType = std::remove_reference_t<
+      decltype(std::declval<fzf_result*>()->scores[0])>;
+    const ScoreType InvalidScore = std::numeric_limits<ScoreType>::max();
+    std::vector<std::tuple<SymbolIdx, uint64_t>> matchSymbols;
+    size_t numMatchSymbols = db->types.size();
+    numMatchSymbols += db->funcs.size();
+    for (auto &var : db->vars) {
+      if (var.def.size() && !var.def[0].is_local())
+        numMatchSymbols++;
+    }
+    strings.reserve(numMatchSymbols);
+    stringLengths.reserve(numMatchSymbols);
+    matchSymbols.reserve(numMatchSymbols);
 
     FzfMatcher matcher(query);
 
@@ -224,56 +267,52 @@ done_add:
       auto detailed_name = db->getSymbolName(sym, true);
       strings.push_back(detailed_name.data());
       stringLengths.push_back(detailed_name.size());
-      matchSymbols.push_back(sym);
+      matchSymbols.emplace_back(sym, InvalidScore);
     };
-    auto match = [&](auto& dbArray, auto kind) {
-      auto matchResult = matcher.match(strings.data(), stringLengths.data(), strings.size());
-      if (matchResult) {
-        for (int i=0; i<matchResult->num_results; i++) {
-            auto symbolIndex = matchResult->indices[i];
-            bool useDetailed = true;
-            SymbolIdx sym = matchSymbols[symbolIndex];
-            bool added = addSymbol(db, wfiles, file_set, sym,
-                                   useDetailed,
-                                   &cands);
-            if (added) {
-              std::get<1>(cands.back()) = matchResult->scores[i];
-            }
-        }
-      }
-    };
+    profiler.meassure("Before processing");
     for (auto &func : db->funcs)
       add({func.usr, Kind::Func});
-    match(db->funcs, Kind::Func);
-
-    strings.clear();
-    stringLengths.clear();
-    matchSymbols.clear();
+    profiler.meassure("Add funcs");
     for (auto &type : db->types)
       add({type.usr, Kind::Type});
-    match(db->types, Kind::Type);
-
-    strings.clear();
-    stringLengths.clear();
-    matchSymbols.clear();
+    profiler.meassure("Add types");
     for (auto &var : db->vars) {
       if (var.def.size() && !var.def[0].is_local()) 
         add({var.usr, Kind::Var});
     }
-    match(db->vars, Kind::Var);
-
-    size_t resultSize = std::min<size_t>(cands.size(), g_config->workspaceSymbol.maxNum);
-    std::partial_sort(cands.begin(), cands.begin() + resultSize, cands.end(),
-        [] (const auto& a, const auto& b) {
-          return std::get<1>(a) < std::get<1>(b);
-        });
-    cands.resize(resultSize);
-    result.reserve(cands.size());
-    std::transform(cands.begin(), cands.end(), std::back_inserter(result), [&](const auto& v) {
-        return std::get<0>(v);
+    profiler.meassure("Add vars");
+    auto matchResult = matcher.match(strings.data(), stringLengths.data(), strings.size());
+    profiler.meassure("fzf");
+    if (matchResult) {
+      for (int i=0; i<matchResult->num_results; i++) {
+        auto symbolIndex = matchResult->indices[i];
+        std::get<1>(matchSymbols[symbolIndex]) = matchResult->scores[i];
+      }
+    }
+    profiler.meassure("fixup scores");
+    std::sort(matchSymbols.begin(), matchSymbols.end(), [](const auto& a, const auto& b) {
+        return std::get<1>(a) < std::get<1>(b);
     });
+    profiler.meassure("sort");
+    result.reserve(g_config->workspaceSymbol.maxNum);
+    const bool useDetailed = true;
+    for(const auto& v: matchSymbols) {
+      const SymbolIdx& sym = std::get<0>(v);
+      const auto score = std::get<1>(v);
+      if (score == InvalidScore)
+        break;
+      std::optional<SymbolInformation> info =
+        addSymbol(db, wfiles, file_set, sym, useDetailed);
+      if (info) {
+        result.push_back(std::move(*info));
+        if (result.size() >= g_config->workspaceSymbol.maxNum) {
+          break;
+        }
+      }
+    }
   }
-
+  profiler.meassure("Before reply");
   reply(result);
+  profiler.meassure("After reply");
 }
 } // namespace ccls
