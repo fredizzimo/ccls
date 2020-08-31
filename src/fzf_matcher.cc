@@ -40,8 +40,11 @@ namespace {
 
 FzfMatcher::FzfMatcher(std::string_view pattern) {
   if (loadLibrary()) {
+    // Sort by length first, since it's easier to type more to get a more specific match,
+    // than to scroll down and manually find the desired shorter result
+    // Then by index first, meaning types before functions, before variables
     this->pattern = FzfMakePattern(pattern.data(), pattern.size(), FZF_ALGORITHM_FUZZY_V2,
-      true, FZF_CASE_SMART, false, FZF_SORT_NONE, FZF_SORT_NONE, FZF_SORT_NONE); 
+      true, FZF_CASE_SMART, false, FZF_SORT_LENGTH, FZF_SORT_INDEX, FZF_SORT_NONE); 
     if (this->pattern->error != nullptr) {
       LOG_S(ERROR) << this->pattern->error;
       FzfFreePattern(this->pattern);

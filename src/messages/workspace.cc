@@ -246,10 +246,12 @@ done_add:
       stringLengths.push_back(detailed_name.size());
       matchSymbols.emplace_back(sym, InvalidScore);
     };
-    for (auto &func : db->funcs)
-      add({func.usr, Kind::Func});
+    // Types are more important than functions, and functions more
+    // important than variables
     for (auto &type : db->types)
       add({type.usr, Kind::Type});
+    for (auto &func : db->funcs)
+      add({func.usr, Kind::Func});
     for (auto &var : db->vars) {
       if (var.def.size() && !var.def[0].is_local()) 
         add({var.usr, Kind::Var});
