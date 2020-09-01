@@ -10,6 +10,11 @@
 #include "sema_manager.hh"
 #include "platform.hh"
 #include "fzf_matcher.hh"
+#ifdef USE_FZY
+extern "C" {
+  #include "choices.h"
+}
+#endif
 
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/StringRef.h>
@@ -142,6 +147,7 @@ std::optional<SymbolInformation> addSymbol(
   return info;
 }
 
+#ifndef USE_FZY
 bool addSymbol(
     DB *db, WorkingFiles *wfiles, const std::vector<uint8_t> &file_set,
     SymbolIdx sym, bool use_detailed,
@@ -153,8 +159,8 @@ bool addSymbol(
   } else {
     return false;
   }
-
 }
+#endif
 } // namespace
 
 void MessageHandler::workspace_symbol(WorkspaceSymbolParam &param,
@@ -164,7 +170,7 @@ void MessageHandler::workspace_symbol(WorkspaceSymbolParam &param,
   for (auto &folder : param.folders)
     ensureEndsInSlash(folder);
   std::vector<uint8_t> file_set = db->getFileSet(param.folders);
-  if (false) {
+#ifndef USE_FZY
     // {symbol info, matching detailed_name or short_name, index}
     std::vector<std::tuple<SymbolInformation, int, SymbolIdx>> cands;
     bool sensitive = g_config->workspaceSymbol.caseSensitivity;
@@ -221,30 +227,26 @@ done_add:
       for (auto &cand : cands)
         result.push_back(std::get<0>(cand));
     }
-  } else {
-    std::vector<const char*> strings;
-    std::vector<uint32_t> stringLengths;
-    using ScoreType = std::remove_reference_t<
-      decltype(std::declval<fzf_result*>()->scores[0])>;
-    const ScoreType InvalidScore = std::numeric_limits<ScoreType>::max();
-    std::vector<std::tuple<SymbolIdx, uint64_t>> matchSymbols;
+#else //USE_FZY
+    std::vector<std::tuple<SymbolIdx, std::string_view>> matchSymbols;
     size_t numMatchSymbols = db->types.size();
     numMatchSymbols += db->funcs.size();
     for (auto &var : db->vars) {
       if (var.def.size() && !var.def[0].is_local())
         numMatchSymbols++;
     }
-    strings.reserve(numMatchSymbols);
-    stringLengths.reserve(numMatchSymbols);
     matchSymbols.reserve(numMatchSymbols);
 
-    FzfMatcher matcher(query);
+    choices_t choices{};
+    options_t options{};
+    choices_init(&choices, &options);
+
+    size_t bufferLength = 0;
 
     auto add = [&](SymbolIdx sym) {
       auto detailed_name = db->getSymbolName(sym, true);
-      strings.push_back(detailed_name.data());
-      stringLengths.push_back(detailed_name.size());
-      matchSymbols.emplace_back(sym, InvalidScore);
+      bufferLength += detailed_name.size() + 1;
+      matchSymbols.emplace_back(sym, detailed_name);
     };
     // Types are more important than functions, and functions more
     // important than variables
@@ -256,23 +258,25 @@ done_add:
       if (var.def.size() && !var.def[0].is_local()) 
         add({var.usr, Kind::Var});
     }
-    auto matchResult = matcher.match(strings.data(), stringLengths.data(), strings.size());
-    if (matchResult) {
-      for (int i=0; i<matchResult->num_results; i++) {
-        auto symbolIndex = matchResult->indices[i];
-        std::get<1>(matchSymbols[symbolIndex]) = matchResult->scores[i];
-      }
+    std::vector<char> strings;
+    strings.reserve(bufferLength);
+    for (auto& matchSym: matchSymbols) {
+      // We need to add null terminators
+      // Note that the vector has been reserved at the start
+      // so the memory will stay the same when pushing back
+      const auto& detailed_name = std::get<1>(matchSym);
+      strings.insert(strings.end(), detailed_name.begin(), detailed_name.end());
+      strings.push_back('\0');
+      choices_add(&choices, &strings.back() - detailed_name.size());
     }
-    std::sort(matchSymbols.begin(), matchSymbols.end(), [](const auto& a, const auto& b) {
-        return std::get<1>(a) < std::get<1>(b);
-    });
+
+    choices_search(&choices, query.c_str());
+
     result.reserve(g_config->workspaceSymbol.maxNum);
     const bool useDetailed = true;
-    for(const auto& v: matchSymbols) {
-      const SymbolIdx& sym = std::get<0>(v);
-      const auto score = std::get<1>(v);
-      if (score == InvalidScore)
-        break;
+    for(size_t i=0; i<choices.available; i++) {
+      size_t matchIdx = choices.results[i].index;
+      const SymbolIdx& sym = std::get<0>(matchSymbols[matchIdx]);
       std::optional<SymbolInformation> info =
         addSymbol(db, wfiles, file_set, sym, useDetailed);
       if (info) {
@@ -282,7 +286,8 @@ done_add:
         }
       }
     }
-  }
+    choices_destroy(&choices);
+#endif //USE_FZY
   reply(result);
 }
 } // namespace ccls

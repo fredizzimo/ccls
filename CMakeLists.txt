@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(ccls LANGUAGES CXX)
+project(ccls LANGUAGES CXX C)
 
 option(USE_SYSTEM_RAPIDJSON "Use system RapidJSON instead of the git submodule if exists" ON)
 
@@ -122,6 +122,19 @@ endif()
 
 if(LLVM_ENABLE_ZLIB)
   find_package(ZLIB)
+endif()
+
+if (DEFINED FZY_DIR)
+    get_filename_component(FZY_ABS_DIR "${FZY_DIR}" ABSOLUTE)
+    add_library(fzy STATIC
+        ${FZY_ABS_DIR}/src/choices.c
+        ${FZY_ABS_DIR}/src/match.c
+    )
+    target_include_directories(fzy PUBLIC
+        ${FZY_ABS_DIR}/src
+    )
+    target_link_libraries(ccls PRIVATE fzy)
+    target_compile_definitions(ccls PRIVATE USE_FZY)
 endif()
 
 ### Definitions
@@ -258,3 +271,12 @@ set_property(SOURCE src/main.cc APPEND PROPERTY
              COMPILE_DEFINITIONS CCLS_VERSION=\"${CCLS_VERSION}\")
 set_property(SOURCE src/messages/initialize.cc APPEND PROPERTY
              COMPILE_DEFINITIONS CCLS_VERSION=\"${CCLS_VERSION}\")
+
+# Generate a compilation database when building
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+add_custom_target(
+    copy-compile-commands ALL
+    ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_BINARY_DIR}/compile_commands.json
+    ${CMAKE_CURRENT_LIST_DIR}
+)
