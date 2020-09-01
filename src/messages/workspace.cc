@@ -244,9 +244,9 @@ done_add:
     size_t bufferLength = 0;
 
     auto add = [&](SymbolIdx sym) {
-      auto detailed_name = db->getSymbolName(sym, true);
-      bufferLength += detailed_name.size() + 1;
-      matchSymbols.emplace_back(sym, detailed_name);
+      auto qualifiedName = db->getSymbolName(sym, true);
+      bufferLength += qualifiedName.size() + 1;
+      matchSymbols.emplace_back(sym, qualifiedName);
     };
     // Types are more important than functions, and functions more
     // important than variables
@@ -258,29 +258,59 @@ done_add:
       if (var.def.size() && !var.def[0].is_local()) 
         add({var.usr, Kind::Var});
     }
-    std::vector<char> strings;
-    strings.reserve(bufferLength);
+    std::vector<char> stringBuffer;
+    std::vector<const char*> strings;
+    stringBuffer.reserve(bufferLength);
+    strings.reserve(matchSymbols.size());
     for (auto& matchSym: matchSymbols) {
       // We need to add null terminators
       // Note that the vector has been reserved at the start
       // so the memory will stay the same when pushing back
-      const auto& detailed_name = std::get<1>(matchSym);
-      strings.insert(strings.end(), detailed_name.begin(), detailed_name.end());
-      strings.push_back('\0');
-      choices_add(&choices, &strings.back() - detailed_name.size());
+      const auto& qualifiedName = std::get<1>(matchSym);
+      stringBuffer.insert(stringBuffer.end(), qualifiedName.begin(), qualifiedName.end());
+      stringBuffer.push_back('\0');
+      strings.push_back(&stringBuffer.back() - qualifiedName.size());
+      choices_add(&choices, strings.back());
     }
 
     choices_search(&choices, query.c_str());
 
     result.reserve(g_config->workspaceSymbol.maxNum);
+    std::vector<SymbolInformation> secondPass;
+
     const bool useDetailed = true;
+    size_t positions[MATCH_MAX_LEN];
     for(size_t i=0; i<choices.available; i++) {
       size_t matchIdx = choices.results[i].index;
       const SymbolIdx& sym = std::get<0>(matchSymbols[matchIdx]);
       std::optional<SymbolInformation> info =
         addSymbol(db, wfiles, file_set, sym, useDetailed);
       if (info) {
-        result.push_back(std::move(*info));
+        // Make sure that symbols with actual character maches
+        // in the name itself comes before the ones that only matches
+        // the qualifier
+        auto shortName = db->getSymbolName(sym, false);
+        const auto& qualifiedName = std::get<1>(matchSymbols[matchIdx]);
+        int shortNameOffset = shortName.data() - qualifiedName.data();
+        // Treat it as a symbol match if one of the colons before the
+        // name matches. This allows for typing the parent symbol followed
+        // by a colon to see all member variables for example
+        shortNameOffset -= 2;
+        match_positions(query.c_str(), strings[matchIdx], positions);
+        int maxMatchPos = *std::max_element(positions, positions + query.size());
+        if (maxMatchPos < shortNameOffset) {
+          secondPass.push_back(*info);
+        } else {
+          result.push_back(*info);
+          if (result.size() >= g_config->workspaceSymbol.maxNum) {
+            break;
+          }
+        }
+      }
+    }
+    if (result.size() < g_config->workspaceSymbol.maxNum) {
+      for (auto& info: secondPass) {
+        result.push_back(info);
         if (result.size() >= g_config->workspaceSymbol.maxNum) {
           break;
         }
