@@ -181,6 +181,7 @@ struct SymbolInformation {
   SymbolKind kind;
   Location location;
   std::optional<std::string_view> containerName;
+  std::optional<std::span<uint32_t>> highlights;
 };
 
 struct TextDocumentIdentifier {

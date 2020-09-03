@@ -24,7 +24,8 @@ extern "C" {
 using namespace llvm;
 
 namespace ccls {
-REFLECT_STRUCT(SymbolInformation, name, kind, location, containerName);
+REFLECT_STRUCT(SymbolInformation, name, kind, location, containerName,
+               highlights);
 
 void MessageHandler::workspace_didChangeConfiguration(EmptyParam &) {
   for (auto &[folder, _] : g_config->workspaceFolders)
@@ -189,7 +190,7 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
   auto *db = handler.db;
   const size_t max_num = std::min<size_t>(g_config->workspaceSymbol.maxNum,
                                           std::numeric_limits<uint32_t>::max());
-  std::vector<SymbolInformation> cands;
+  std::vector<std::tuple<SymbolInformation, fzf_string_t>> cands;
   std::vector<std::tuple<int32_t, uint32_t>> cands_heap;
   cands.reserve(max_num);
   cands_heap.reserve(max_num);
@@ -201,11 +202,12 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
       auto score = fzf_get_score_str(&name, fzf_pattern.get(), slab.get());
       if (score > 0) {
         if (cands.size() < max_num) {
-          addSymbol(db, handler.wfiles, file_set, sym,
-                    [&cands, &cands_heap, &score](SymbolInformation &&info) {
-                      cands_heap.emplace_back(score, cands.size());
-                      cands.emplace_back(std::move(info));
-                    });
+          addSymbol(
+              db, handler.wfiles, file_set, sym,
+              [&cands, &cands_heap, &score, name](SymbolInformation &&info) {
+                cands_heap.emplace_back(score, cands.size());
+                cands.emplace_back(std::move(info), name);
+              });
         } else {
           if (cands.size() == max_num) {
             std::make_heap(cands_heap.begin(), cands_heap.end(),
@@ -219,8 +221,9 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
             addSymbol(db, handler.wfiles, file_set, sym,
                       [&](SymbolInformation &&info) {
                         max_score = score;
-                        auto &sym = cands[std::get<1>(max_element)];
-                        sym = std::move(info);
+                        auto &cand = cands[std::get<1>(max_element)];
+                        std::get<0>(cand) = std::move(info);
+                        std::get<1>(cand) = name;
                         sift_down(cands_heap.begin(), cands_heap.end(),
                                   [&](const auto &lhs, const auto &rhs) {
                                     const auto &sl = std::get<0>(lhs);
@@ -245,9 +248,19 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
             [](const auto &l, const auto &r) { return l > r; });
   std::vector<SymbolInformation> result;
   result.reserve(cands_heap.size());
+  size_t num_positions = fzf_get_num_positions(fzf_pattern.get());
+  auto position_buffer = std::make_unique_for_overwrite<int[]>(num_positions);
+  fzf_position_t pos;
+  pos.cap = num_positions;
   for (const auto &i : cands_heap) {
-    auto &info = cands[std::get<1>(i)];
+    auto &cand = cands[std::get<1>(i)];
+    const auto &info = std::get<0>(cand);
+    auto &name = std::get<1>(cand);
+    fzf_get_positions_str(&name, fzf_pattern.get(), &pos, slab.get());
     result.push_back(std::move(info));
+    result.back().highlights.emplace(pos.data, pos.size);
+    pos.cap -= pos.size;
+    pos.data += pos.size;
   }
 
   reply(result);
