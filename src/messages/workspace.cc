@@ -27,7 +27,7 @@ extern "C" {
 using namespace llvm;
 
 namespace ccls {
-REFLECT_STRUCT(SymbolInformation, name, kind, location, containerName);
+REFLECT_STRUCT(SymbolInformation, name, kind, location, containerName, highlights);
 
 void MessageHandler::workspace_didChangeConfiguration(EmptyParam &) {
   for (auto &[folder, _] : g_config->workspaceFolders)
@@ -286,7 +286,7 @@ done_add:
       std::optional<SymbolInformation> info =
         addSymbol(db, wfiles, file_set, sym, useDetailed);
       if (info) {
-        // Make sure that symbols with actual character maches
+        // Make sure that symbols with actual character maches 
         // in the name itself comes before the ones that only matches
         // the qualifier
         auto shortName = db->getSymbolName(sym, false);
@@ -298,10 +298,20 @@ done_add:
         shortNameOffset -= 2;
         match_positions(query.c_str(), strings[matchIdx], positions);
         int maxMatchPos = *std::max_element(positions, positions + query.size());
+
+        auto qualifiedNameOffset = info->name.find(qualifiedName);
+        if (qualifiedNameOffset != std::string_view::npos) {
+          info->highlights.emplace();
+          info->highlights->reserve(query.size());
+          for (size_t j = 0; j<query.size(); j++) {
+            info->highlights->push_back(positions[j] + qualifiedNameOffset);
+          }
+        }
+
         if (maxMatchPos < shortNameOffset) {
-          secondPass.push_back(*info);
+          secondPass.push_back(std::move(*info));
         } else {
-          result.push_back(*info);
+          result.push_back(std::move(*info));
           if (result.size() >= g_config->workspaceSymbol.maxNum) {
             break;
           }
@@ -310,7 +320,7 @@ done_add:
     }
     if (result.size() < g_config->workspaceSymbol.maxNum) {
       for (auto& info: secondPass) {
-        result.push_back(info);
+        result.push_back(std::move(info));
         if (result.size() >= g_config->workspaceSymbol.maxNum) {
           break;
         }
