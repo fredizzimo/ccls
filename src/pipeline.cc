@@ -340,11 +340,14 @@ bool indexer_Parse(SemaManager *completion, WorkingFiles *wfiles,
 
   std::vector<std::unique_ptr<IndexFile>> indexes;
   int n_errs = 0;
+  SmallString<4096> msg;
   std::string first_error;
   if (deleted) {
     indexes.push_back(std::make_unique<IndexFile>(request.path, "", false));
     if (request.path != path_to_index)
       indexes.push_back(std::make_unique<IndexFile>(path_to_index, "", false));
+    if (loud)
+      (Twine("delete ") + path_to_index).toVector(msg);
   } else {
     std::vector<std::pair<std::string, std::string>> remapped;
     if (g_config->index.onChange) {
@@ -358,7 +361,6 @@ bool indexer_Parse(SemaManager *completion, WorkingFiles *wfiles,
                    entry.args, remapped, no_linkage, ok);
     indexes = std::move(result.indexes);
     n_errs = result.n_errs;
-    first_error = std::move(result.first_error);
 
     if (!ok) {
       if (request.id.valid()) {
@@ -369,15 +371,16 @@ bool indexer_Parse(SemaManager *completion, WorkingFiles *wfiles,
       }
       return true;
     }
+    if (loud || n_errs) {
+      (Twine("parse ") + path_to_index).toVector(msg);
+      if (n_errs) {
+        msg += "\n";
+        msg += result.diagResult;
+      }
+    }
   }
 
   if (loud || n_errs) {
-    std::string line;
-    SmallString<64> tmp;
-    SmallString<256> msg;
-    (Twine(deleted ? "delete " : "parse ") + path_to_index).toVector(msg);
-    if (n_errs)
-      msg += (" error:" + Twine(n_errs) + " " + first_error).toStringRef(tmp);
     if (LOG_V_ENABLED(1)) {
       msg += "\n ";
       for (const char *arg : entry.args)

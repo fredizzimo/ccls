@@ -12,6 +12,7 @@
 #include <clang/Basic/Specifiers.h>
 #include <llvm/ADT/CachedHashString.h>
 #include <llvm/ADT/DenseMap.h>
+#include <llvm/ADT/SmallString.h>
 
 #include <stdint.h>
 #include <string_view>
@@ -325,7 +326,7 @@ struct IndexFile {
 struct IndexResult {
   std::vector<std::unique_ptr<IndexFile>> indexes;
   int n_errs = 0;
-  std::string first_error;
+  llvm::SmallString<4096> diagResult;
 };
 
 struct SemaManager;

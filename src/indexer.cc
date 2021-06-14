@@ -13,6 +13,7 @@
 #include <clang/Basic/TargetInfo.h>
 #include <clang/Frontend/FrontendAction.h>
 #include <clang/Frontend/MultiplexConsumer.h>
+#include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <clang/Index/IndexDataConsumer.h>
 #include <clang/Index/IndexingAction.h>
 #include <clang/Index/USRGeneration.h>
@@ -1212,6 +1213,7 @@ public:
     DiagnosticConsumer::HandleDiagnostic(level, info);
     if (message.empty())
       info.FormatDiagnostic(message);
+    LOG_S(INFO) << std::string_view(message.data(), message.size());
   }
 };
 } // namespace
@@ -1291,12 +1293,17 @@ index(SemaManager *manager, WorkingFiles *wfiles, VFS *vfs,
       bufs.push_back(llvm::MemoryBuffer::getMemBuffer(content));
       ci->getPreprocessorOpts().addRemappedFile(filename, bufs.back().get());
     }
+  IndexResult result;
 
-  IndexDiags dc;
+  //IndexDiags dc;
   auto clang = std::make_unique<CompilerInstance>(pch);
   clang->setInvocation(std::move(ci));
-  clang->createDiagnostics(&dc, false);
-  clang->getDiagnostics().setIgnoreAllWarnings(true);
+  llvm::raw_svector_ostream diagStream(result.diagResult);
+  TextDiagnosticPrinter diagPrinter(diagStream, &clang->getDiagnosticOpts(), false);
+  clang->createDiagnostics(&diagPrinter, false);
+  clang->getDiagnostics().setIgnoreAllWarnings(false);
+  //clang->createDiagnostics(&dc, false);
+  //clang->getDiagnostics().setIgnoreAllWarnings(true);
   clang->setTarget(TargetInfo::CreateTargetInfo(
       clang->getDiagnostics(), clang->getInvocation().TargetOpts));
   if (!clang->hasTarget())
@@ -1310,7 +1317,6 @@ index(SemaManager *manager, WorkingFiles *wfiles, VFS *vfs,
 #endif
   clang->setSourceManager(new SourceManager(clang->getDiagnostics(),
                                             clang->getFileManager(), true));
-
   IndexParam param(*vfs, no_linkage);
 
   index::IndexingOptions indexOpts;
@@ -1341,6 +1347,7 @@ index(SemaManager *manager, WorkingFiles *wfiles, VFS *vfs,
   {
     llvm::CrashRecoveryContext crc;
     auto parse = [&]() {
+      diagPrinter.BeginSourceFile(clang->getLangOpts(), nullptr);
       if (!action->BeginSourceFile(*clang, clang->getFrontendOpts().Inputs[0]))
         return;
 #if LLVM_VERSION_MAJOR >= 9 // rL364464
@@ -1365,11 +1372,12 @@ index(SemaManager *manager, WorkingFiles *wfiles, VFS *vfs,
                  << (reason.empty() ? "" : ": " + reason);
     return {};
   }
+  diagPrinter.EndSourceFile();
 
-  IndexResult result;
-  result.n_errs = (int)dc.getNumErrors();
+  //result.n_errs = (int)dc.getNumErrors();
+  result.n_errs = (int)diagPrinter.getNumErrors() + diagPrinter.getNumWarnings();
   // clang 7 does not implement operator std::string.
-  result.first_error = std::string(dc.message.data(), dc.message.size());
+  //result.first_error = std::string(dc.message.data(), dc.message.size());
   for (auto &it : param.uid2file) {
     if (!it.second.db)
       continue;
