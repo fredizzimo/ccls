@@ -1,0 +1,24 @@
+# Maintainer: Felix Yan <felixonmars@archlinux.org>
+# Contributor: Fangrui Song <i at maskray.me>
+
+pkgname=ccls
+pkgver=0.20210330
+pkgrel=3
+pkgdesc='C/C++/ObjC language server supporting cross references, hierarchies, completion and semantic highlighting'
+arch=('x86_64')
+url='https://github.com/MaskRay/ccls'
+license=('Apache')
+depends=('clang=12.0.1' 'llvm-libs' 'rapidjson')
+makedepends=("cmake" "llvm")
+conflicts=('ccls-git')
+
+build() {
+  cd ../../..
+  cmake -H. -Bbuild -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_CXX_COMPILER=clang++ -DCLANG_LINK_CLANG_DYLIB=1
+  cmake --build build
+}
+
+package() {
+  cd ../../../build
+  make DESTDIR="$pkgdir" install
+}
