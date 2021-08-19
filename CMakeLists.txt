@@ -186,6 +186,8 @@ foreach(include_dir third_party
   endif()
 endforeach()
 
+target_include_directories(ccls PRIVATE third_party/fzf/src)
+
 ### Install
 
 install(TARGETS ccls RUNTIME DESTINATION bin)
@@ -193,6 +195,7 @@ install(TARGETS ccls RUNTIME DESTINATION bin)
 ### Sources
 
 target_sources(ccls PRIVATE third_party/siphash.cc)
+target_sources(ccls PRIVATE third_party/fzf/src/fzf.c)
 
 target_sources(ccls PRIVATE
   src/clang_tu.cc
