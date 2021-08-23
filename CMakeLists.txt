@@ -26,8 +26,8 @@ endif()
 
 ### Compile options
 
-# Enable C++17 (Required)
-set_property(TARGET ccls PROPERTY CXX_STANDARD 17)
+# Enable C++20 (Required)
+set_property(TARGET ccls PROPERTY CXX_STANDARD 20)
 set_property(TARGET ccls PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET ccls PROPERTY CXX_EXTENSIONS OFF)
 
