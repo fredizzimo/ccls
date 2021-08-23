@@ -14,6 +14,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -365,6 +366,13 @@ template <typename T> void reflect(BinaryWriter &vis, std::vector<T> &v) {
   for (auto &it : v)
     reflect(vis, it);
 }
+
+template <typename T> void reflect(JsonWriter &vis, std::span<T> &s) {
+  vis.startArray();
+  for (auto &it : s)
+    reflect(vis, it);
+  vis.endArray();
+};
 
 // reflectMember
 
