@@ -510,6 +510,31 @@ std::string_view DB::getSymbolName(SymbolIdx sym, bool qualified) {
   return "";
 }
 
+std::string_view DB::getDetailedSymbolName(SymbolIdx sym) {
+  Usr usr = sym.usr;
+  switch (sym.kind) {
+  default:
+    break;
+  case Kind::File:
+    if (files[usr].def)
+      return files[usr].def->path;
+    break;
+  case Kind::Func:
+    if (const auto *def = getFunc(usr).anyDef())
+      return def->detailed_name;
+    break;
+  case Kind::Type:
+    if (const auto *def = getType(usr).anyDef())
+      return def->detailed_name;
+    break;
+  case Kind::Var:
+    if (const auto *def = getVar(usr).anyDef())
+      return def->detailed_name;
+    break;
+  }
+  return "";
+}
+
 std::vector<uint8_t> DB::getFileSet(const std::vector<std::string> &folders) {
   if (folders.empty())
     return std::vector<uint8_t>(files.size(), 1);

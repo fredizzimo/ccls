@@ -190,23 +190,50 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
   auto *db = handler.db;
   const size_t max_num = std::min<size_t>(g_config->workspaceSymbol.maxNum,
                                           std::numeric_limits<uint32_t>::max());
-  std::vector<std::tuple<SymbolInformation, fzf_string_t>> cands;
+  std::vector<std::tuple<SymbolInformation, SymbolIdx>> cands;
   std::vector<std::tuple<int32_t, uint32_t>> cands_heap;
   cands.reserve(max_num);
   cands_heap.reserve(max_num);
 
+  const int8_t unqualified_match_score = 32;
+  const int8_t qualified_match_score = 16;
+  const int8_t detail_match_score = 8;
+
+  fzf_score_t scoring;
+  scoring.score_match_pos = NULL, scoring.score_gap_start = -3,
+  scoring.score_gap_extention = -1, scoring.bonus_boundary = 8,
+  scoring.bonus_non_word = 8, scoring.bonus_camel_123 = 8 - 1,
+  scoring.bonus_consecutive = 3 + 1, scoring.bonus_first_char_multiplier = 1;
+  std::vector<int8_t> match_scores;
+  auto call_fzf = [&](SymbolIdx sym, auto f) {
+    std::string_view detailed_name = handler.db->getDetailedSymbolName(sym);
+    std::string_view qualified_name = handler.db->getSymbolName(sym, true);
+    std::string_view unqualified_name = handler.db->getSymbolName(sym, false);
+    match_scores.resize(detailed_name.size());
+    std::fill_n(match_scores.begin(), detailed_name.size(), detail_match_score);
+    const size_t qualified_name_offset =
+        qualified_name.data() - detailed_name.data();
+    std::fill_n(match_scores.begin() + qualified_name_offset,
+                qualified_name.size(), qualified_match_score);
+    const size_t unqualified_name_offset =
+        unqualified_name.data() - detailed_name.data();
+    std::fill_n(match_scores.begin() + unqualified_name_offset,
+                unqualified_name.size(), unqualified_match_score);
+    scoring.score_match_pos = match_scores.data();
+    fzf_string_t name = {detailed_name.data(), detailed_name.size()};
+    return f(&name, fzf_pattern.get(), &scoring, slab.get());
+  };
+
   auto add = [&](SymbolIdx sym) {
-    std::string_view detailed_name = handler.db->getSymbolName(sym, true);
-    if (detailed_name.size() > 0) {
-      fzf_string_t name = {detailed_name.data(), detailed_name.size()};
-      auto score = fzf_get_score_str(&name, fzf_pattern.get(), slab.get());
+    if (handler.db->getSymbolName(sym, false).size() > 0) {
+      auto score = call_fzf(sym, fzf_get_score_str);
       if (score > 0) {
         if (cands.size() < max_num) {
           addSymbol(
               db, handler.wfiles, file_set, sym,
-              [&cands, &cands_heap, &score, name](SymbolInformation &&info) {
+              [&cands, &cands_heap, &score, sym](SymbolInformation &&info) {
                 cands_heap.emplace_back(score, cands.size());
-                cands.emplace_back(std::move(info), name);
+                cands.emplace_back(std::move(info), sym);
               });
         } else {
           if (cands.size() == max_num) {
@@ -223,7 +250,7 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
                         max_score = score;
                         auto &cand = cands[std::get<1>(max_element)];
                         std::get<0>(cand) = std::move(info);
-                        std::get<1>(cand) = name;
+                        std::get<1>(cand) = sym;
                         sift_down(cands_heap.begin(), cands_heap.end(),
                                   [&](const auto &lhs, const auto &rhs) {
                                     const auto &sl = std::get<0>(lhs);
@@ -245,18 +272,39 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
       add({var.usr, Kind::Var});
 
   std::sort(cands_heap.begin(), cands_heap.end(),
-            [](const auto &l, const auto &r) { return l > r; });
+            [&cands](const auto &lhs, const auto &rhs) {
+              const auto &lhs_score = std::get<0>(lhs);
+              const auto &rhs_score = std::get<0>(rhs);
+              if (lhs_score == rhs_score) {
+                const auto &lhs_idx = std::get<1>(lhs);
+                const auto &rhs_idx = std::get<1>(rhs);
+                const auto &lhs_sym = cands[lhs_idx];
+                const auto &rhs_sym = cands[rhs_idx];
+                const auto &lhs_info = std::get<0>(lhs_sym);
+                const auto &rhs_info = std::get<0>(rhs_sym);
+                return lhs_info.name < rhs_info.name;
+              } else {
+                return lhs_score > rhs_score;
+              }
+            });
   std::vector<SymbolInformation> result;
   result.reserve(cands_heap.size());
   size_t num_positions = fzf_get_num_positions(fzf_pattern.get());
-  auto position_buffer = std::make_unique_for_overwrite<int[]>(num_positions);
+  num_positions *= cands_heap.size();
+  auto position_buffer =
+      std::make_unique_for_overwrite<uint32_t[]>(num_positions);
   fzf_position_t pos;
+  pos.data = position_buffer.get();
   pos.cap = num_positions;
   for (const auto &i : cands_heap) {
     auto &cand = cands[std::get<1>(i)];
     const auto &info = std::get<0>(cand);
-    auto &name = std::get<1>(cand);
-    fzf_get_positions_str(&name, fzf_pattern.get(), &pos, slab.get());
+    auto &sym = std::get<1>(cand);
+    call_fzf(sym, [&pos](auto *text, auto *pattern, auto *scoring,
+                         auto *slab) mutable {
+      fzf_get_positions_str(text, pattern, scoring, &pos, slab);
+    });
+
     result.push_back(std::move(info));
     result.back().highlights.emplace(pos.data, pos.size);
     pos.cap -= pos.size;
