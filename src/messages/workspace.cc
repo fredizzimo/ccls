@@ -113,8 +113,8 @@ namespace {
 template <typename Adder>
 bool addSymbol(DB *db, WorkingFiles *wfiles,
                const std::vector<uint8_t> &file_set, SymbolIdx sym,
-               Adder adder) {
-  std::optional<SymbolInformation> info = getSymbolInfo(db, sym, true);
+               bool detailed, Adder adder) {
+  std::optional<SymbolInformation> info = getSymbolInfo(db, sym, detailed);
   if (!info)
     return false;
 
@@ -171,6 +171,27 @@ decltype(auto) make_unique(T *p, Deleter deleter) {
   return std::unique_ptr<T, Deleter>(p, deleter);
 }
 
+auto parse_query(const std::string &query) {
+  std::string output;
+  bool detailed = false;
+  static constexpr std::string_view str_detailed{"d"};
+  output.reserve(query.size());
+  for (auto i = query.begin(); i != query.end(); ++i) {
+    if (*i != '\\') {
+      output += *i;
+    } else {
+      std::string_view view{i + 1, query.end()};
+      if (view.starts_with(str_detailed)) {
+        detailed = true;
+        i += str_detailed.size();
+      } else {
+        output += *i;
+      }
+    }
+  }
+  return std::make_tuple(std::move(output), detailed);
+}
+
 void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
                           const std::vector<uint8_t> &file_set,
                           ReplyOnce &reply) {
@@ -180,7 +201,11 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
       case_modes[g_config->workspaceSymbol.caseSensitivity];
   const bool normalize = false;
   const bool fuzzy = true;
-  fzf_string_t fzf_query = {query.data(), query.size()};
+  const auto [parsed_query, d] = parse_query(query);
+  // The current version of clang does not implement P1091R3 completely
+  // So introduce a variable to let the lamba capture work
+  auto detailed = d;
+  fzf_string_t fzf_query = {parsed_query.data(), parsed_query.size()};
   auto fzf_pattern = make_unique(
       fzf_parse_pattern_str(case_mode, normalize, &fzf_query, fuzzy),
       [](auto *p) { fzf_free_pattern(p); });
@@ -206,9 +231,10 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
   scoring.bonus_consecutive = 3 + 1, scoring.bonus_first_char_multiplier = 1;
   std::vector<int8_t> match_scores;
   auto call_fzf = [&](SymbolIdx sym, auto f) {
-    std::string_view detailed_name = handler.db->getDetailedSymbolName(sym);
     std::string_view qualified_name = handler.db->getSymbolName(sym, true);
     std::string_view unqualified_name = handler.db->getSymbolName(sym, false);
+    std::string_view detailed_name =
+        detailed ? handler.db->getDetailedSymbolName(sym) : qualified_name;
     match_scores.resize(detailed_name.size());
     std::fill_n(match_scores.begin(), detailed_name.size(), detail_match_score);
     const size_t qualified_name_offset =
@@ -230,7 +256,7 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
       if (score > 0) {
         if (cands.size() < max_num) {
           addSymbol(
-              db, handler.wfiles, file_set, sym,
+              db, handler.wfiles, file_set, sym, detailed,
               [&cands, &cands_heap, &score, sym](SymbolInformation &&info) {
                 cands_heap.emplace_back(score, cands.size());
                 cands.emplace_back(std::move(info), sym);
@@ -245,7 +271,7 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
           auto &max_element = cands_heap[0];
           auto &max_score = std::get<0>(max_element);
           if (score > max_score) {
-            addSymbol(db, handler.wfiles, file_set, sym,
+            addSymbol(db, handler.wfiles, file_set, sym, detailed,
                       [&](SymbolInformation &&info) {
                         max_score = score;
                         auto &cand = cands[std::get<1>(max_element)];
@@ -341,7 +367,7 @@ void MessageHandler::workspace_symbol(WorkspaceSymbolParam &param,
     std::string_view detailed_name = db->getSymbolName(sym, true);
     int pos = reverseSubseqMatch(query_without_space, detailed_name, sensitive);
     return pos >= 0 &&
-           addSymbol(db, wfiles, file_set, sym,
+           addSymbol(db, wfiles, file_set, sym, true,
                      [&](SymbolInformation &&info) {
                        const bool detailed =
                            detailed_name.find(':', pos) != std::string::npos;
