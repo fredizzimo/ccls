@@ -192,6 +192,37 @@ auto parse_query(const std::string &query) {
   return std::make_tuple(std::move(output), detailed);
 }
 
+std::string_view add_one_qualifier(const std::string_view &name,
+                                   const std::string_view &qualified_name) {
+  std::string_view temp{qualified_name.begin(),
+                        qualified_name.size() - name.size()};
+  auto i = temp.find_last_not_of(':');
+  if (i != std::string::npos) {
+    temp.remove_suffix(temp.size() - i - 1);
+    if (temp.ends_with('>')) {
+      size_t count = 1;
+      temp.remove_suffix(1);
+      while (count > 0 && !temp.empty()) {
+        char c = temp.back();
+        if (c == '>') {
+          count++;
+        } else if (c == '<') {
+          count--;
+        }
+        temp.remove_suffix(1);
+      }
+    }
+    i = temp.find_last_of(':');
+    if (i != std::string::npos) {
+      temp.remove_prefix(i + 1);
+    }
+    size_t diff = name.data() - temp.data();
+    return {temp.data(), name.size() + diff};
+  } else {
+    return name;
+  }
+}
+
 void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
                           const std::vector<uint8_t> &file_set,
                           ReplyOnce &reply) {
@@ -230,21 +261,27 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
   scoring.bonus_non_word = 8, scoring.bonus_camel_123 = 8 - 1,
   scoring.bonus_consecutive = 3 + 1, scoring.bonus_first_char_multiplier = 1;
   std::vector<int8_t> match_scores;
+  const bool is_nested_name = parsed_query.ends_with(':');
   auto call_fzf = [&](SymbolIdx sym, auto f) {
     std::string_view qualified_name = handler.db->getSymbolName(sym, true);
     std::string_view unqualified_name = handler.db->getSymbolName(sym, false);
     std::string_view detailed_name =
         detailed ? handler.db->getDetailedSymbolName(sym) : qualified_name;
     match_scores.resize(detailed_name.size());
-    std::fill_n(match_scores.begin(), detailed_name.size(), detail_match_score);
-    const size_t qualified_name_offset =
-        qualified_name.data() - detailed_name.data();
-    std::fill_n(match_scores.begin() + qualified_name_offset,
-                qualified_name.size(), qualified_match_score);
-    const size_t unqualified_name_offset =
-        unqualified_name.data() - detailed_name.data();
-    std::fill_n(match_scores.begin() + unqualified_name_offset,
-                unqualified_name.size(), unqualified_match_score);
+
+    auto set_score = [&](const auto &substr, auto score) {
+      size_t offset = substr.data() - detailed_name.data();
+      std::fill_n(match_scores.begin() + offset, substr.size(), score);
+    };
+
+    set_score(detailed_name, detail_match_score);
+    set_score(qualified_name, qualified_match_score);
+
+    if (is_nested_name && qualified_name.data() != unqualified_name.data()) {
+      unqualified_name = add_one_qualifier(unqualified_name, qualified_name);
+    }
+    set_score(unqualified_name, unqualified_match_score);
+
     scoring.score_match_pos = match_scores.data();
     fzf_string_t name = {detailed_name.data(), detailed_name.size()};
     return f(&name, fzf_pattern.get(), &scoring, slab.get());
