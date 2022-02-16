@@ -355,7 +355,11 @@ void workspace_symbol_fzf(MessageHandler &handler, const std::string &query,
   size_t num_positions = fzf_get_num_positions(fzf_pattern.get());
   num_positions *= cands_heap.size();
   auto position_buffer =
+#ifdef __cpp_lib_smart_ptr_for_overwrite
       std::make_unique_for_overwrite<uint32_t[]>(num_positions);
+#else
+      std::make_unique<uint32_t[]>(num_positions);
+#endif
   fzf_position_t pos;
   pos.data = position_buffer.get();
   pos.cap = num_positions;
